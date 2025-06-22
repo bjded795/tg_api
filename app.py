@@ -376,7 +376,7 @@ def stream_video(group_id, video_idx):
                     end = min(int(match.group(2)), file_size - 1)
                 status_code = 206
                 headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
-                headers['Content-Length': str(end - start + 1)
+                headers['Content-Length': str(end - start + 1)]
             else:
                 logger.error(f"Invalid range header: {range_header}")
                 return Response(status=416, headers={'Content-Range': f'bytes */{file_size}'})
