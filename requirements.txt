@@ -1,0 +1,1 @@
+Flask==2.3.3 telethon==1.36.0 gunicorn==22.0.0
