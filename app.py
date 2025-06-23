@@ -4,6 +4,7 @@ from flask import Flask, Response, jsonify
 from telethon import TelegramClient
 from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
 import os
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -21,37 +22,55 @@ API_HASH = 'd8d697e4b63ee18a95c48eb875dd0947'
 PHONE = '+918755365674'
 SESSION_FILE = 'telegram_session.session'
 
-# Initialize asyncio loop globally
-loop = asyncio.get_event_loop_policy().new_event_loop()
+# Global variables
+loop = None
 client = None
+loop_thread = None
 
-async def init_telegram_client():
-    global client
-    if os.path.exists(SESSION_FILE):
-        logger.info("Loaded session string from file")
-        client = TelegramClient(SESSION_FILE, API_ID, API_HASH, loop=loop)
-        await client.start(phone=PHONE)
-        if await client.is_user_authorized():
-            logger.info("Telegram client authenticated successfully")
-        else:
-            logger.error("Telegram client not authenticated")
-    else:
-        logger.error("Session file missing or invalid")
-        raise Exception("Session file missing or invalid")
+def setup_event_loop():
+    """Set up a dedicated event loop in a separate thread."""
+    global loop, loop_thread
+    loop = asyncio.new_event_loop()
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
 
 def run_async_in_thread(coro):
+    """Run an async coroutine in a thread-safe manner."""
     try:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=30)
+        return future.result(timeout=60)
     except Exception as e:
         logger.error(f"Async operation failed: {str(e)}")
         raise
 
-# Initialize client on app startup
+async def init_telegram_client():
+    """Initialize the Telegram client."""
+    global client
+    try:
+        if not os.path.exists(SESSION_FILE):
+            logger.error("Session file missing")
+            raise Exception("Session file 'telegram_session.session' not found")
+        
+        client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+        await client.start(phone=PHONE)
+        if await client.is_user_authorized():
+            logger.info("Telegram client authenticated successfully")
+        else:
+            logger.error("Telegram client authentication failed")
+            raise Exception("Telegram client not authenticated")
+    except Exception as e:
+        logger.error(f"Failed to initialize Telegram client: {str(e)}")
+        raise
+
+# Initialize event loop and client
+setup_event_loop()
 try:
     run_async_in_thread(init_telegram_client())
 except Exception as e:
-    logger.error(f"Failed to initialize Telegram client: {str(e)}")
+    logger.error(f"Startup initialization failed: {str(e)}")
 
 @app.route('/')
 def index():
@@ -100,6 +119,8 @@ def get_videos(group_id):
         videos = []
         entity = await client.get_entity(int(group_id))
         async for message in client.iter_messages(entity, filter=lambda m: m.video):
+            file_name = "Unknown"
+            duration = 0
             for attr in message.document.attributes:
                 if isinstance(attr, DocumentAttributeFilename):
                     file_name = attr.file_name
@@ -128,11 +149,10 @@ def get_videos(group_id):
 def stream_video(group_id, video_idx):
     async def fetch_video():
         entity = await client.get_entity(int(group_id))
-        async for message in client.iter_messages(entity, filter=lambda m: m.video, limit=video_idx + 1):
-            messages = [m async for m in client.iter_messages(entity, filter=lambda m: m.video, limit=video_idx + 1)]
-            if video_idx < len(messages):
-                video_message = messages[video_idx]
-                return video_message
+        messages = [m async for m in client.iter_messages(entity, filter=lambda m: m.video, limit=video_idx + 1)]
+        if video_idx < len(messages):
+            return messages[video_idx]
+        return None
 
     try:
         video_message = run_async_in_thread(fetch_video())
