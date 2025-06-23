@@ -38,19 +38,23 @@ loop = None
 is_authenticated = False
 loop_thread = None
 
-def setup_event_loop():
+def setup_async():
     """Setup async event loop in a separate thread."""
     global loop, loop_thread
     loop = asyncio.new_event_loop()
-    def run_loop():
+    def start_loop():
         asyncio.set_event_loop(loop)
+        logger.info("Starting event loop thread")
         loop.run_forever()
-    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread = threading.Thread(target=start_loop, daemon=True)
     loop_thread.start()
-    logger.info("Event loop started in separate thread")
+    logger.info("Event loop thread started")
 
 def run_async_in_thread(coro, timeout=60):
     """Run an async coroutine in a thread-safe manner."""
+    if loop is None:
+        logger.error("Event loop not initialized")
+        raise RuntimeError("Event loop not initialized")
     try:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=timeout)
@@ -60,6 +64,13 @@ def run_async_in_thread(coro, timeout=60):
     except Exception as e:
         logger.error(f"Async operation failed: {str(e)}\n{traceback.format_exc()}")
         raise
+
+def sync_async(f):
+    """Decorator to run async functions synchronously."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        return run_async_in_thread(f(*args, **kwargs))
+    return wrapper
 
 async def init_client():
     """Initialize and authenticate Telegram client."""
@@ -111,111 +122,91 @@ def health_check():
     })
 
 @app.route('/groups')
-def list_groups():
+@sync_async
+async def list_groups():
     """List all available groups."""
-    async def fetch_groups():
-        if not client or not client.is_connected():
-            await init_client()
-        groups = []
-        try:
-            logger.info("Fetching groups...")
-            async for dialog in client.iter_dialogs():
-                if dialog.is_group or dialog.is_channel:
-                    entity = dialog.entity
-                    group_id = entity.id
-                    if not str(group_id).startswith('-100'):
-                        group_id = int(f"-100{abs(group_id)}")
-                    groups.append({
-                        'id': str(group_id),
-                        'name': entity.title,
-                        'access_hash': entity.access_hash if hasattr(entity, 'access_hash') else 0
-                    })
-            logger.info(f"Fetched {len(groups)} groups/channels")
-            return groups
-        except RPCError as e:
-            logger.error(f"Telegram RPC error fetching groups: {str(e)}")
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching groups: {str(e)}")
-            raise
-
+    if not client or not client.is_connected():
+        await init_client()
+    groups = []
     try:
-        groups = run_async_in_thread(fetch_groups())
-        return jsonify({
+        logger.info("Fetching groups...")
+        async for dialog in client.iter_dialogs():
+            if dialog.is_group or dialog.is_channel:
+                entity = dialog.entity
+                group_id = entity.id
+                if not str(group_id).startswith('-100'):
+                    group_id = int(f"-100{abs(group_id)}")
+                groups.append({
+                    'id': str(group_id),
+                    'name': entity.title,
+                    'access_hash': entity.access_hash if hasattr(entity, 'access_hash') else 0
+                })
+        logger.info(f"Fetched {len(groups)} groups/channels")
+        return {
             'status': 'success',
             'groups': groups,
             'count': len(groups)
-        })
+        }
+    except RPCError as e:
+        logger.error(f"Telegram RPC error fetching groups: {str(e)}\n{traceback.format_exc()}")
+        raise
     except Exception as e:
-        logger.error(f"Error in list_groups: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        logger.error(f"Error fetching groups: {str(e)}\n{traceback.format_exc()}")
+        raise
 
 @app.route('/videos/<group_id>')
-def list_videos(group_id):
+@sync_async
+async def list_videos(group_id):
     """List videos in a group."""
-    async def fetch_videos():
-        if not client or not client.is_connected():
-            await init_client()
-        videos = []
-        try:
-            logger.info(f"Fetching videos for group {group_id}...")
-            if not str(group_id).startswith('-100'):
-                group_id_int = int(f"-100{abs(int(group_id))}")
-            else:
-                group_id_int = int(group_id)
-            async for message in client.iter_messages(
-                group_id_int,
-                filter=InputMessagesFilterVideo,
-                limit=20
-            ):
-                if message.media and isinstance(message.media, MessageMediaDocument):
-                    document = message.media.document
-                    if hasattr(document, 'mime_type') and 'video' in document.mime_type:
-                        file_name = f"video_{message.id}.mp4"
-                        for attr in document.attributes:
-                            if isinstance(attr, DocumentAttributeFilename):
-                                file_name = attr.file_name
-                                break
-                        videos.append({
-                            'group_id': str(group_id_int),
-                            'message_id': message.id,
-                            'file_name': file_name,
-                            'file_size': document.size,
-                            'mime_type': document.mime_type,
-                            'access_hash': document.access_hash,
-                            'file_reference': base64.b64encode(document.file_reference).decode('utf-8') if document.file_reference else None,
-                            'play_url': f'/{str(group_id_int)}/{len(videos)}'
-                        })
-            logger.info(f"Fetched {len(videos)} videos from group {group_id}")
-            return videos
-        except RPCError as e:
-            logger.error(f"Telegram RPC error fetching videos: {str(e)}")
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching videos: {str(e)}")
-            raise
-
+    if not client or not client.is_connected():
+        await init_client()
+    videos = []
     try:
-        videos = run_async_in_thread(fetch_videos())
+        logger.info(f"Fetching videos for group {group_id}...")
+        if not str(group_id).startswith('-100'):
+            group_id_int = int(f"-100{abs(int(group_id))}")
+        else:
+            group_id_int = int(group_id)
+        async for message in client.iter_messages(
+            group_id_int,
+            filter=InputMessagesFilterVideo,
+            limit=20
+        ):
+            if message.media and isinstance(message.media, MessageMediaDocument):
+                document = message.media.document
+                if hasattr(document, 'mime_type') and 'video' in document.mime_type:
+                    file_name = f"video_{message.id}.mp4"
+                    for attr in document.attributes:
+                        if isinstance(attr, DocumentAttributeFilename):
+                            file_name = attr.file_name
+                            break
+                    videos.append({
+                        'group_id': str(group_id_int),
+                        'message_id': message.id,
+                        'file_name': file_name,
+                        'file_size': document.size,
+                        'mime_type': document.mime_type,
+                        'access_hash': document.access_hash,
+                        'file_reference': base64.b64encode(document.file_reference).decode('utf-8') if document.file_reference else None,
+                        'play_url': f'/{str(group_id_int)}/{len(videos)}'
+                    })
+        logger.info(f"Fetched {len(videos)} videos from group {group_id}")
         if not videos:
-            return jsonify({
+            return {
                 'status': 'error',
                 'message': 'No videos found'
-            }), 404
-        return jsonify({
+            }
+        return {
             'status': 'success',
             'videos': videos,
             'count': len(videos)
-        })
+        }
+    except RPCError as e:
+        logger.error(f"Telegram RPC error fetching videos: {str(e)}\n{traceback.format_exc()}")
+        raise
     except Exception as e:
-        logger.error(f"Error in list_videos: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        logger.error(f"Error fetching videos: {str(e)}\n{traceback.format_exc()}")
+        raise
 
 @app.route('/<group_id>/<int:video_idx>')
 def stream_video(group_id, video_idx):
@@ -235,10 +226,10 @@ def stream_video(group_id, video_idx):
                 logger.warning(f"File reference expired, retrying... (attempt {attempt + 1})")
                 await asyncio.sleep(0.5)
             except RPCError as e:
-                logger.error(f"Telegram RPC error getting message {message_id}: {str(e)}")
+                logger.error(f"Telegram RPC error getting message {message_id}: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.error(f"Error getting fresh message for ID {message_id}: {str(e)}")
+                logger.error(f"Error getting fresh message for ID {message_id}: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.5)
         logger.error(f"Failed to get fresh message for ID {message_id} after 3 attempts")
         return None
@@ -280,10 +271,10 @@ def stream_video(group_id, video_idx):
                 logger.warning(f"Flood wait, sleeping for {wait_time} seconds...")
                 await asyncio.sleep(wait_time)
             except RPCError as e:
-                logger.error(f"Telegram RPC error downloading chunk: {str(e)}")
+                logger.error(f"Telegram RPC error downloading chunk: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.error(f"Error downloading chunk: {str(e)}")
+                logger.error(f"Error downloading chunk: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.5)
         logger.error(f"Failed to download chunk after 3 attempts")
         return None
@@ -367,7 +358,7 @@ def stream_video(group_id, video_idx):
 def main():
     """Main application entry point."""
     try:
-        setup_event_loop()
+        setup_async()
         run_async_in_thread(init_client())
         logger.info("Starting Flask server")
         app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)), threaded=True)
