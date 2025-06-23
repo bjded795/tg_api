@@ -41,6 +41,10 @@ loop_thread = None
 def setup_async():
     """Setup async event loop in a separate thread."""
     global loop, loop_thread
+    if loop is not None and loop.is_running():
+        logger.info("Event loop already running")
+        return
+        
     loop = asyncio.new_event_loop()
     def start_loop():
         asyncio.set_event_loop(loop)
@@ -54,7 +58,9 @@ def run_async_in_thread(coro, timeout=60):
     """Run an async coroutine in a thread-safe manner."""
     if loop is None:
         logger.error("Event loop not initialized")
-        raise RuntimeError("Event loop not initialized")
+        setup_async()  # Try to initialize if not already done
+        if loop is None:
+            raise RuntimeError("Event loop not initialized")
     try:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=timeout)
@@ -75,6 +81,12 @@ def sync_async(f):
 async def init_client():
     """Initialize and authenticate Telegram client."""
     global client, is_authenticated
+    
+    # Create session file from environment variable if it doesn't exist
+    if not os.path.exists(SESSION_FILE) and os.getenv('SESSION_STRING'):
+        with open(SESSION_FILE, 'w') as f:
+            f.write(os.getenv('SESSION_STRING'))
+    
     if client and client.is_connected():
         logger.info("Telegram client already connected")
         return
@@ -97,6 +109,17 @@ async def init_client():
         is_authenticated = False
         if client and client.is_connected():
             await client.disconnect()
+        raise
+
+@app.before_first_request
+def initialize():
+    """Initialize the application before first request."""
+    try:
+        logger.info("Initializing application...")
+        setup_async()
+        run_async_in_thread(init_client())
+    except Exception as e:
+        logger.error(f"Initialization failed: {str(e)}\n{traceback.format_exc()}")
         raise
 
 @app.route('/')
@@ -154,10 +177,8 @@ async def list_groups():
         logger.error(f"Error fetching groups: {str(e)}\n{traceback.format_exc()}")
         raise
 
-@app.route('/videos/<group_id>')
-@sync_async
-async def list_videos(group_id):
-    """List videos in a group."""
+async def fetch_videos(group_id):
+    """Helper function to fetch videos from a group."""
     if not client or not client.is_connected():
         await init_client()
     videos = []
@@ -191,22 +212,29 @@ async def list_videos(group_id):
                         'play_url': f'/{str(group_id_int)}/{len(videos)}'
                     })
         logger.info(f"Fetched {len(videos)} videos from group {group_id}")
-        if not videos:
-            return {
-                'status': 'error',
-                'message': 'No videos found'
-            }
-        return {
-            'status': 'success',
-            'videos': videos,
-            'count': len(videos)
-        }
+        return videos
     except RPCError as e:
         logger.error(f"Telegram RPC error fetching videos: {str(e)}\n{traceback.format_exc()}")
         raise
     except Exception as e:
         logger.error(f"Error fetching videos: {str(e)}\n{traceback.format_exc()}")
         raise
+
+@app.route('/videos/<group_id>')
+@sync_async
+async def list_videos(group_id):
+    """List videos in a group."""
+    videos = await fetch_videos(group_id)
+    if not videos:
+        return {
+            'status': 'error',
+            'message': 'No videos found'
+        }
+    return {
+        'status': 'success',
+        'videos': videos,
+        'count': len(videos)
+    }
 
 @app.route('/<group_id>/<int:video_idx>')
 def stream_video(group_id, video_idx):
@@ -358,8 +386,11 @@ def stream_video(group_id, video_idx):
 def main():
     """Main application entry point."""
     try:
-        setup_async()
-        run_async_in_thread(init_client())
+        # Initialize immediately for CLI runs
+        if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or __name__ == '__main__':
+            setup_async()
+            run_async_in_thread(init_client())
+            
         logger.info("Starting Flask server")
         app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)), threaded=True)
     except Exception as e:
