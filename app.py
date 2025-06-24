@@ -37,6 +37,7 @@ client = None
 loop = None
 is_authenticated = False
 loop_thread = None
+initialized = False
 
 def setup_async():
     """Setup async event loop in a separate thread."""
@@ -111,16 +112,25 @@ async def init_client():
             await client.disconnect()
         raise
 
-@app.before_first_request
-def initialize():
-    """Initialize the application before first request."""
-    try:
-        logger.info("Initializing application...")
-        setup_async()
-        run_async_in_thread(init_client())
-    except Exception as e:
-        logger.error(f"Initialization failed: {str(e)}\n{traceback.format_exc()}")
-        raise
+def ensure_initialized(f):
+    """Decorator to ensure app is initialized before handling requests."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        global initialized
+        if not initialized:
+            try:
+                logger.info("Initializing application...")
+                setup_async()
+                run_async_in_thread(init_client())
+                initialized = True
+            except Exception as e:
+                logger.error(f"Initialization failed: {str(e)}\n{traceback.format_exc()}")
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Initialization failed'
+                }), 500
+        return f(*args, **kwargs)
+    return wrapper
 
 @app.route('/')
 def index():
@@ -137,6 +147,7 @@ def index():
     })
 
 @app.route('/health')
+@ensure_initialized
 def health_check():
     """Health check endpoint."""
     return jsonify({
@@ -145,6 +156,7 @@ def health_check():
     })
 
 @app.route('/groups')
+@ensure_initialized
 @sync_async
 async def list_groups():
     """List all available groups."""
@@ -221,6 +233,7 @@ async def fetch_videos(group_id):
         raise
 
 @app.route('/videos/<group_id>')
+@ensure_initialized
 @sync_async
 async def list_videos(group_id):
     """List videos in a group."""
@@ -237,6 +250,7 @@ async def list_videos(group_id):
     }
 
 @app.route('/<group_id>/<int:video_idx>')
+@ensure_initialized
 def stream_video(group_id, video_idx):
     """Stream video endpoint."""
     async def get_fresh_message(group_id_int, message_id):
@@ -390,6 +404,7 @@ def main():
         if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or __name__ == '__main__':
             setup_async()
             run_async_in_thread(init_client())
+            initialized = True
             
         logger.info("Starting Flask server")
         app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)), threaded=True)
