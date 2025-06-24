@@ -2,7 +2,6 @@ import logging
 import asyncio
 import re
 import base64
-import signal
 import sys
 import os
 import time
@@ -11,7 +10,7 @@ import threading
 from flask import Flask, jsonify, Response, request, stream_with_context
 from telethon import TelegramClient
 from telethon.tl.types import MessageMediaDocument, InputMessagesFilterVideo, DocumentAttributeFilename
-from telethon.errors import SessionPasswordNeededError, FileReferenceExpiredError, FloodWaitError, RPCError
+from telethon.errors import FileReferenceExpiredError, FloodWaitError, RPCError
 from telethon.sessions import StringSession
 from functools import wraps
 
@@ -26,11 +25,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 logger.info("Flask app initialized")
 
-# Telegram API credentials (use environment variables in production)
-API_ID = int(os.getenv('API_ID', 22551545))
-API_HASH = os.getenv('API_HASH', 'd8d697e4b63ee18a95c48eb875dd0947')
-PHONE = os.getenv('PHONE', '+918755365674')
-SESSION_FILE = 'telegram_session.session'
+# Telegram API credentials
+API_ID = 22551545
+API_HASH = 'd8d697e4b63ee18a95c48eb875dd0947'
+PHONE = '+918755365674'
+
+# Hardcoded session string
+SESSION_STRING = '1BVtsOKsBuxZ4b-siBx55oOKENioFw5vijWcIOLPsrcsvRndcOKW8L1DNFoK7f_kx65baciqaFcKQVp8VbzT_DMibuKAm2dCPe5j-eTEsbi5DF88CweAfdLmajrwzI06Ew2dzceJEJXwNx7OwJL0vrF6Z14cWEBtfetbUWHUDYO6Eu85IQdJNbaSzB2WRDhhXwOBTZAAN8WbGxhHrfNytmCe7_G7R1rYmVsx4wAWb9-H6kJejZiTvkMIJUxJo7djMIu4wxG3yKCJZy-SMcBITPYX2wWHkO0BZOW8cXAsKqjKM4LcoDFcrB0CeooiS82rYV5ja-cCXfvuxgHJV1z8J5rSkXfGAQvM='
 
 # Global variables
 client = None
@@ -59,7 +60,7 @@ def run_async_in_thread(coro, timeout=60):
     """Run an async coroutine in a thread-safe manner."""
     if loop is None:
         logger.error("Event loop not initialized")
-        setup_async()  # Try to initialize if not already done
+        setup_async()
         if loop is None:
             raise RuntimeError("Event loop not initialized")
     try:
@@ -83,26 +84,16 @@ async def init_client():
     """Initialize and authenticate Telegram client."""
     global client, is_authenticated
     
-    # Create session file from environment variable if it doesn't exist
-    if not os.path.exists(SESSION_FILE) and os.getenv('SESSION_STRING'):
-        with open(SESSION_FILE, 'w') as f:
-            f.write(os.getenv('SESSION_STRING'))
-    
-    if client and client.is_connected():
-        logger.info("Telegram client already connected")
-        return
-
-    if not os.path.exists(SESSION_FILE):
-        logger.error("Session file 'telegram_session.session' not found")
-        raise Exception("Session file missing")
-
     try:
-        logger.info("Initializing Telegram client...")
-        client = TelegramClient(SESSION_FILE, API_ID, API_HASH, loop=loop)
+        logger.info("Initializing Telegram client with hardcoded session...")
+        session = StringSession(SESSION_STRING)
+        client = TelegramClient(session, API_ID, API_HASH, loop=loop)
         await client.connect()
+        
         if not await client.is_user_authorized():
             logger.error("Client not authorized")
             raise Exception("Telegram client not authenticated")
+            
         is_authenticated = True
         logger.info("Telegram client authenticated successfully")
     except Exception as e:
