@@ -194,7 +194,7 @@ async def fetch_videos(group_id):
         async for message in client.iter_messages(
             group_id_int,
             filter=InputMessagesFilterVideo,
-            limit=20
+            limit=5000
         ):
             if message.media and isinstance(message.media, MessageMediaDocument):
                 document = message.media.document
